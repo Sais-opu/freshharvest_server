@@ -35,8 +35,9 @@ async function run() {
 
         const database = client.db('freshharvest');
         const userCollection = database.collection('users');
+        const authCollection = database.collection('auth');
 
-        // User
+        // User Start
         app.get('/api/v1/users', async (req, res) => {
             try {
                 const { email, fullName, searchTerm } = req.query;
@@ -85,7 +86,7 @@ async function run() {
 
         app.put('/api/v1/users/profile', async (req, res) => {
             try {
-                const userId = req.userId; 
+                const userId = req.userId;
                 if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
                 const updateData = req.body;
@@ -131,6 +132,73 @@ async function run() {
             }
         });
 
+        // Auth start
+        // POST /api/v1/auth/login
+        app.post('/api/v1/auth/login', async (req, res) => {
+            const { email, password } = req.body;
+            if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
+
+            try {
+                const user = await authCollection.findOne({ email });
+                if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+
+                const passwordMatch = await bcrypt.compare(password, user.password);
+                if (!passwordMatch) return res.status(401).json({ message: 'Invalid credentials' });
+
+                const token = jwt.sign(
+                    { id: user._id.toString(), email: user.email, role: user.role || 'USER' },
+                    process.env.JWT_SECRET,
+                    { expiresIn: '7d' }
+                );
+
+                res.json({ token });
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ message: 'Login failed' });
+            }
+        });
+
+        // GET /api/v1/auth/profile
+        app.get('/api/v1/auth/profile', authMiddleware, async (req, res) => {
+            try {
+                const user = await authCollection.findOne(
+                    { _id: new ObjectId(req.user.id) },
+                    { projection: { password: 0 } }
+                );
+                if (!user) return res.status(404).json({ message: 'User not found' });
+
+                res.json(user);
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ message: 'Failed to get profile' });
+            }
+        });
+
+        // PUT /api/v1/auth/change-password
+        app.put('/api/v1/auth/change-password', authMiddleware, async (req, res) => {
+            const { oldPassword, newPassword } = req.body;
+            if (!oldPassword || !newPassword) return res.status(400).json({ message: 'Old and new password required' });
+
+            try {
+                const user = await authCollection.findOne({ _id: new ObjectId(req.user.id) });
+                if (!user) return res.status(404).json({ message: 'User not found' });
+
+                const passwordMatch = await bcrypt.compare(oldPassword, user.password);
+                if (!passwordMatch) return res.status(401).json({ message: 'Old password incorrect' });
+
+                const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+
+                await authCollection.updateOne(
+                    { _id: new ObjectId(req.user.id) },
+                    { $set: { password: hashedNewPassword } }
+                );
+
+                res.json({ message: 'Password changed successfully' });
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ message: 'Failed to change password' });
+            }
+        });
 
     } finally {
         // Ensures that the client will close when you finish/error
